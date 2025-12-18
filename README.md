@@ -1,213 +1,204 @@
-# Smart-Video-Record-Deepstream-For-USB-in-Python
-Guide to set up DeepStream pyds and run an USB pipeline in Python. 
+# Smart-Video-Record-DeepStream-For-USB-in-Python
 
-# Single USB Camera DeepStream Demo (Person-Only + Smart Recording)
-
-This repository contains a **minimal, single-camera** DeepStream + GStreamer example designed for **NVIDIA Jetson**.
-It is intentionally “clean-room simple” so you can open it in **Visual Studio Code**, press **Run**, and immediately see
-how a DeepStream pipeline is built and how **Smart Recording** is triggered.
-
-What it does:
-- Uses **one USB camera** (`/dev/videoX`) and displays it **full screen** .
-- Runs inference with **`nvinfer`**.
-- Draws **ONLY** `person` detections and their **confidence**.
-- Supports **Smart Recording** (USB mode via **NvDsSR** / DeepStream smartrecord library).
-- Includes a manual hotkey (R) to record a clip.
+A practical guide + minimal code to:
+- set up **DeepStream Python (`pyds`)**
+- run a **single USB camera** pipeline in Python
+- do **YOLO inference with `nvinfer`**
+- **record smart clips** (pre/post event) from a USB source using **NvDsSR**
 
 ---
 
-## Files you should upload
+## What this demo does
+
+- Uses **one USB camera** (`/dev/videoX`) and displays it **full screen** (no layout switching, no logo).
+- Runs inference with **`nvinfer`** using a config file (example included).
+- Draws **ONLY** `person` detections and their **confidence**.
+- Supports **Smart Recording** for USB (manual **NvDsSR** via DeepStream smartrecord library).
+- Hotkeys:
+  - **R** → record a clip
+  - **ESC** → exit
+
+---
+
+## Repository files
 
 - `usb_cam.py`  
-  Main application: camera capture → inference → OSD → fullscreen display → Smart Record triggers.
+  Main app: USB camera → decode → streammux → nvinfer → OSD → fullscreen sink → Smart Record triggers.
 
 - `usb_smartrec.py`  
-  Smart Recording helper module (manual NvDsSR for USB).
+  Smart Recording helper (manual NvDsSR wiring for USB).
+
+- `pt_to_onnx.py`  
+  Transform .pt to .onnx.
+  
+- `dstest1_pgie_config.txt`  
+  Example `nvinfer` configuration for YOLO.  
+  Key fields include `onnx-file`, `model-engine-file`, `parse-bbox-func-name`, `custom-lib-path`, and `engine-create-func-name`. 
+
+- `labels.txt`  
+  Example label file (COCO-style list). 
 
 ---
 
-## Background: how this demo is built
+## Background: how it works (high level)
 
-DeepStream applications are typically GStreamer pipelines with NVIDIA-accelerated elements.
-This demo is intentionally built “the long way” (explicitly creating and linking elements) so people can learn from it.
+DeepStream apps are usually **GStreamer pipelines** using NVIDIA-accelerated elements.
 
-### 1) Video capture and decode (USB)
+### 1) USB capture + decode
+Typical USB webcams output MJPEG. The pipeline requests MJPEG from `/dev/videoX` and decodes it using NVIDIA decode:
+- `v4l2src` → reads `/dev/videoX`
+- `capsfilter` → requests `image/jpeg` with a chosen resolution/FPS
+- `nvv4l2decoder` → hardware MJPEG decode into NVMM memory
+- `nvvidconv` / `nvvideoconvert` → color/format conversion for DeepStream elements
 
-USB cameras commonly output MJPEG. The demo requests MJPEG from the camera and decodes it with NVIDIA hardware:
+### 2) Inference with `nvinfer`
+Inference is handled by `nvinfer`, which reads a config file.
+Your sample config uses:
+- `onnx-file=yolov11.pt.onnx`
+- `model-engine-file=/home/nvidia/Desktop/Forklift/Engine/b1_gpu0_fp16.engine`
+- `parse-bbox-func-name=NvDsInferParseYolo`
+- `custom-lib-path=.../libnvdsinfer_custom_impl_Yolo.so`
+- `engine-create-func-name=NvDsInferYoloCudaEngineGet` 
 
-**Pipeline concept (simplified):**
-- `v4l2src`  
-  Reads frames from `/dev/videoX`.
-- `capsfilter` (MJPEG caps)  
-  Asks the camera for `image/jpeg` at a chosen resolution / FPS.
-- `nvv4l2decoder`  
-  Hardware decoder (MJPEG → NV12 in GPU memory).
-- `nvvidconv` / `nvvideoconvert`  
-  Converts to the format DeepStream components expect.
+### 3) OSD (drawing)
+`nvdsosd` draws boxes/text.
+This demo **filters metadata** so it only draws:
+- `person`
+- confidence text like: `person 87.3%`
 
-### 2) Inference (nvinfer)
+### 4) Smart Recording for USB (NvDsSR)
+DeepStream has two Smart Record modes:
 
-DeepStream inference is done by `nvinfer`, configured by a `.txt` file that points to:
-- the model/engine
-- label file (optional)
-- preprocessing settings
-- class settings
+1) `nvurisrcbin` built-in Smart Record (great for RTSP)  
+2) **Manual NvDsSR** (needed for USB / v4l2)
 
+This repo uses **manual NvDsSR** so USB works:
+- A `tee` splits the stream
+- One branch goes to inference + display
+- The other branch goes through encoder + parser into the NvDsSR recordbin (so the recorder gets **encoded** H264/H265)
 
-### 3) On-screen display (nvdsosd)
-
-`nvdsosd` draws boxes and text.  
-This demo modifies metadata so it only draws:
-- objects that are “person” (class-id match)
-- text label showing confidence
-
-Everything else is hidden.
-
-### 4) Smart Recording (USB)
-
-DeepStream has two Smart Record approaches:
-
-1. **Built-in Smart Record inside `nvurisrcbin`**  
-   Great for RTSP sources. (Not used here.)
-
-2. **Manual Smart Record (NvDsSR)**  
-   This is needed for a USB pipeline. It requires DeepStream’s smartrecord library:
-- `libnvdsgst_smartrecord.so`
-
-In this demo:
-- We split the stream with a `tee`.
-- One branch goes to display/inference.
-- Another branch feeds an **encoder + parser** into the **NvDsSR recordbin**.
-
-**Recording concept:**
-- Smart Record keeps a small circular buffer (“cache”) so you can save **a few seconds before** the trigger.
-- When triggered, we record:
-  - `SR_BACK_SEC` seconds in the past
-  - `SR_FRONT_SEC` seconds into the future
-
-This is exactly how “event recording” works in many camera systems.
-
-### 5) Triggers
-
-The demo supports two triggers:
-- **Automatic:** when a person is detected above `MIN_PERSON_CONF`
-- **Manual:** press **R** to record a clip
+Smart Record keeps a small “cache” (ring buffer), so each clip can include:
+- **`SR_BACK_SEC`** seconds *before* the trigger
+- **`SR_FRONT_SEC`** seconds *after* the trigger
 
 ---
 
-## Requirements
+# Setup / Configuration Guide (Important)
 
-This demo is meant for **Jetson + DeepStream**.
+## A) Install DeepStream
+Install NVIDIA DeepStream on your Jetson (via JetPack + DeepStream SDK installer, or NVIDIA packages).
+After install, you should have:
+- `/opt/nvidia/deepstream/deepstream/`
 
-You should already have:
-- NVIDIA DeepStream installed
-- DeepStream Python bindings (`pyds`) working
-- PyGObject (`gi`) working
-- A USB camera available as `/dev/videoX`
+## B) Install DeepStream Python (`pyds`)
+You must be able to run:
+```python
+import pyds
+```
+If `import pyds` fails, fix DeepStream Python first (this repo assumes it already works).
 
-### Smart Recording requirement (USB)
-For USB Smart Recording, DeepStream’s smartrecord library must be accessible.
-Most commonly it exists at:
+## C) Enable YOLO in DeepStream (the critical part)
 
-- `/opt/nvidia/deepstream/deepstream/lib/libnvdsgst_smartrecord.so`
+DeepStream **does not natively know how to post-process YOLO outputs**.
+You need a YOLO custom parser and (often) an engine creation helper. The most common solution is:
 
-If the library is missing, the app can still run, but **Smart Recording will be disabled**.
+- **marcoslucianops / DeepStream-Yolo**
+
+### 1) Build the YOLO custom parser `.so`
+In the DeepStream-Yolo repo, compile the library:
+```bash
+make -C nvdsinfer_custom_impl_Yolo clean && make -C nvdsinfer_custom_impl_Yolo
+```
+That produces `libnvdsinfer_custom_impl_Yolo.so`. 
+
+### 2) Point your `nvinfer` config to the `.so`
+Your `dstest1_pgie_config.txt` already does this via:
+- `custom-lib-path=/home/nvidia/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so` 
+
+### 3) Use the YOLO parser function
+Your config sets:
+- `parse-bbox-func-name=NvDsInferParseYolo` 
+
+### 4) (Optional) Engine creation helper
+Your config sets:
+- `engine-create-func-name=NvDsInferYoloCudaEngineGet`
+
+This allows DeepStream-Yolo to help generate the TensorRT engine in some workflows.
 
 ---
 
-## How to run (Visual Studio Code)
+## D) Model files (ONNX + TensorRT engine)
 
-1. Open the folder in **VS Code** on the Jetson.
+Your config expects:
+- `onnx-file=yolov11.pt.onnx`
+- `model-engine-file=/home/nvidia/Desktop/Engine/b1_gpu0_fp16.engine` 
+
+You must ensure:
+- the ONNX file exists at the path given (You can use the provided pt_to_onnx.py file)
+- the engine file exists at the path given  
+  (or DeepStream is allowed to generate it depending on your setup)
+
+**Tip:** If you move files, update the config paths.
+
+---
+
+## E) Labels + class count (very important)
+
+Your config currently has:
+- `num-detected-classes=1` 
+
+But your `labels.txt` contains many labels (COCO list). 
+
+You should make these consistent:
+- If your model is **person-only**, keep `num-detected-classes=1` and use a **single-line** labels file:
+  - `person`
+- If your model is COCO (80 classes), set:
+  - `num-detected-classes=80`
+  - and keep the COCO labels file
+
+---
+
+# Running the demo
+
+1. Open this repo folder in **Visual Studio Code** on the Jetson.
 2. Open `usb_cam.py`.
-3. Edit the configuration block at the top (next section).
-4. Run.
+3. Edit the config block at the top:
+   - `USB_DEVICE = "/dev/video0"`
+   - `PGIE_CONFIG = "<absolute path>/dstest1_pgie_config.txt"`
+4. Click **Run**.
 
-No command line arguments are required.
-
----
-
-## Configuration (edit at top of `usb_cam_demo_single_persononly.py`)
-
-- **USB device**
-```python
-USB_DEVICE = "/dev/video0"
-```
-
-- **PGIE config**
-```python
-PGIE_CONFIG = "/home/nvidia/Desktop/new/dstest1_pgie_config.txt"
-```
-
-- **Person class IDs**
-```python
-PERSON_CLASS_IDS = {0}
-```
-If your model uses a different class id for person, change it here.
-
-- **Minimum confidence**
-```python
-MIN_PERSON_CONF = 0.35
-```
-
-- **Smart Record clip duration**
-```python
-SR_BACK_SEC = 10
-SR_FRONT_SEC = 10
-```
-
-- **Output folder**
-```python
-SMARTREC_DIR = "SmartRecDir"
-```
+No command-line args required.
 
 ---
 
 ## Controls
-
-- **R** → Start a Smart Record clip immediately
-- **ESC** → Exit
+- **R** → record a Smart Record clip
+- **ESC** → exit
 
 ---
 
 ## Output clips
-
-Recordings are saved under:
-- `SmartRecDir/`
-
-The filenames include a prefix and timestamp (depending on the DeepStream SR backend).
+Clips are written to:
+- `SmartRecDir/` (default)
 
 ---
 
 ## Troubleshooting
 
 ### `NVDSINFER_CONFIG_FAILED`
-Almost always means something inside the PGIE config is wrong:
-- bad path to the config file itself
-- model/engine file not found
-- label file not found
-- invalid config option for your DeepStream version
+Usually one of:
+- bad config file path
+- missing ONNX/engine file
+- wrong `custom-lib-path` (YOLO parser `.so` not found)
+- mismatch between model output and parser settings
 
-Fix: open the PGIE config and verify every referenced path exists.
-
-### Smart Recording doesn’t work (USB)
-Smart Recording for USB requires DeepStream’s smartrecord library to be present.
-If it’s missing, recording will be disabled.
-
-### No video frames
-Double-check:
-- the correct `/dev/videoX` device
-- camera permissions
-- camera supports the requested caps (resolution/FPS)
-
----
-
-## Notes for people forking this repo
-
-- This is a learning-oriented example, not a full product.
-- It’s intentionally small and readable.
+### YOLO runs but no detections
+Common causes:
+- wrong `num-detected-classes`
+- wrong thresholds (`pre-cluster-threshold`, NMS settings)
+- wrong input dims / preprocessing settings for your exported ONNX
 
 ---
 
 ## License
-
 MIT
