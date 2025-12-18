@@ -55,7 +55,7 @@ Typical USB webcams output MJPEG. The pipeline requests MJPEG from `/dev/videoX`
 Inference is handled by `nvinfer`, which reads a config file.
 Your sample config uses:
 - `onnx-file=yolov11.pt.onnx`
-- `model-engine-file=/home/nvidia/Desktop/Forklift/Engine/b1_gpu0_fp16.engine`
+- `model-engine-file=/home/nvidia/Desktop/Engine/b1_gpu0_fp16.engine`
 - `parse-bbox-func-name=NvDsInferParseYolo`
 - `custom-lib-path=.../libnvdsinfer_custom_impl_Yolo.so`
 - `engine-create-func-name=NvDsInferYoloCudaEngineGet` 
