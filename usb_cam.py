@@ -51,7 +51,7 @@ CAM_W, CAM_H, CAM_FPS = 1280, 720, 30
 USB_CAPS = f"image/jpeg,width={CAM_W},height={CAM_H},framerate={CAM_FPS}/1"
 
 # DeepStream primary detector config (must exist)
-PGIE_CONFIG = "/home/nvidia/Desktop/new/dstest1_pgie_config.txt"
+PGIE_CONFIG = "dstest1_pgie_config.txt"
 
 # Keep mux resolution the same as camera for a simple demo.
 MUX_W, MUX_H = CAM_W, CAM_H
